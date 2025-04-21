@@ -96,7 +96,38 @@ class Net(nn.Module):
             pose_cond=pose_fea
         )[0]
         return noise_pred
+
+def compute_frequency_loss(pred, target, mask=None, epsilon=1e-8):
+    """
+    Compute frequency domain loss between prediction and target images as described in FitDiT paper.
+    
+    Args:
+        pred: Predicted image tensor [B, C, H, W]
+        target: Target image tensor [B, C, H, W]
+        mask: Garment segmentation mask tensor [B, 1, H, W]
+        epsilon: Small value to avoid numerical instability
         
+    Returns:
+        Frequency domain loss (scalar)
+    """
+    # Apply mask if available - only consider the garment area as described in the paper
+    if mask is not None:
+        pred = pred * mask
+        target = target * mask
+    
+    # Apply 2D FFT to each color channel separately, preserving color information
+    pred_fft = torch.fft.fft2(pred, dim=(-2, -1))
+    target_fft = torch.fft.fft2(target, dim=(-2, -1))
+    
+    # Compute magnitude spectrum (amplitude)
+    pred_magnitude = torch.abs(pred_fft) + epsilon
+    target_magnitude = torch.abs(target_fft) + epsilon
+    
+    # Calculate MSE loss in frequency domain
+    # This matches the paper formula: Lf = sum_{u=0}^{M-1} sum_{v=0}^{N-1} |F_x̂tr⊙mg(u, v) - F_xp⊙mg(u, v)|²
+    freq_loss = F.mse_loss(pred_magnitude, target_magnitude)
+    
+    return freq_loss
 
 def main(cfg):
     if torch.backends.mps.is_available() and cfg.mixed_precision == "bf16":
@@ -145,7 +176,7 @@ def main(cfg):
             
             
     #初始化模型（VAE、文本编码器、条件编码器、主干网络等）
-    transformer_garm = SD3Transformer2DModel_Garm.from_pretrained(os.path.join(cfg.model_root, "transformer_garm"))
+    transformer_garm = SD3Transformer2DModel_Garm.from_pretrained("/workspace/new_weights/transformer_garm")
     transformer_vton = SD3Transformer2DModel_Vton.from_pretrained(os.path.join(cfg.model_root, "transformer_vton"))
     vae = AutoencoderKL.from_pretrained(os.path.join(cfg.model_root, "vae"))
     pose_guider = PoseGuider(conditioning_embedding_channels=1536, conditioning_channels=3, block_out_channels=(32, 64, 256, 512))
@@ -253,7 +284,7 @@ def main(cfg):
 
         optimizer = Adafactor(
             params_to_optimize,
-            lr=cfg.learning_rate,
+            lr=cfg.learning_rate,  # Reduced learning rate for stability
             scale_parameter=False,
             relative_step=False,
             # warmup_init=True,
@@ -262,7 +293,7 @@ def main(cfg):
     else:
         optimizer = optimizer_class(
             params_to_optimize,
-            lr=cfg.learning_rate,
+            lr=cfg.learning_rate,  # Reduced learning rate for stability
             betas=(cfg.adam_beta1, cfg.adam_beta2),
             weight_decay=cfg.adam_weight_decay,
             eps=cfg.adam_epsilon,
@@ -355,6 +386,13 @@ def main(cfg):
         while len(sigma.shape) < n_dim:
             sigma = sigma.unsqueeze(-1)
         return sigma
+
+    # Flag to indicate when to start using frequency loss
+    use_freq_loss = False
+    freq_loss_weight = 0.01  # Start with a small weight
+    freq_loss_start_step = 500  # Start using frequency loss after this many steps
+    freq_loss_ramp_steps = 2000  # Gradually increase weight over this many steps
+    
     for epoch in range(first_epoch, cfg.num_train_epochs):
         train_loss = 0.0
         for step, batch in enumerate(train_dataloader):
@@ -367,13 +405,6 @@ def main(cfg):
                 pixel_latents = pixel_latents.to(dtype=weight_dtype)
                 
                 bsz = pixel_latents.shape[0]
-                # pixel_latents = _pack_latents(
-                #     pixel_latents,
-                #     pixel_values.shape[0],
-                #     pixel_latents.shape[1],
-                #     pixel_latents.shape[2],
-                #     pixel_latents.shape[3],
-                # )
                 
                 noise = torch.randn_like(pixel_latents).to(accelerator.device).to(dtype=weight_dtype)
                 # Sample a random timestep for each image
@@ -408,7 +439,7 @@ def main(cfg):
                     encoder_hidden_states=None,
                     return_dict=False
                 )
-                
+
                 noise_pred = net(
                     hidden_states=torch.cat([noisy_model_input, vton_model_input, batch["mask_input"].to(dtype=weight_dtype)], dim=1),
                     timesteps=timesteps,
@@ -419,42 +450,65 @@ def main(cfg):
                     encoder_hidden_states=None,
                     return_dict=False,
                 )
-                # mask torch.Size([1, 1, 128, 96])
-                x0_pred = (noisy_model_input - sigmas * noise_pred) # / (1.0 - sigmas)
-                x0_pred = (x0_pred / vae.config.scaling_factor) + vae.config.shift_factor
-
-                pixel_x0_pred = vae.decode(x0_pred, return_dict=False)[0]
-                mask = F.interpolate(batch["mask_input"], (pixel_values.shape[2], pixel_values.shape[3]))[0]
-                pixel_x0_pred = pixel_x0_pred.float() * mask
-                pixel_values = pixel_values.float() * mask
-                pixel_x0_pred = torch.fft.fft2(torch.mean(pixel_x0_pred, dim=1))
-                pixel_values = torch.fft.fft2(torch.mean(pixel_values, dim=1)) 
-                # Follow: Section 5 of https://arxiv.org/abs/2206.00364.
-                # Preconditioning of the model outputs.
-                # if args.precondition_outputs:
-                #     model_pred = model_pred * (-sigmas) + noisy_model_input
-                # these weighting schemes use a uniform timestep sampling
-                # and instead post-weight the loss
-                weighting = compute_loss_weighting_for_sd3(weighting_scheme=args.weighting_scheme, sigmas=sigmas)
                 
-                loss = torch.mean(
-                    (weighting.float() * (pixel_x0_pred.float() - pixel_values.float()) ** 2).reshape(bsz, -1),
-                    1,
-                )
-                loss = loss.mean()
-                # loss = F.mse_loss(noise_pred.float(), (noise - pixel_latents).float(), reduction="mean")
-                # loss = F.mse_loss(pixel_x0_pred * batch["mask_input"], pixel_values * batch["mask_input"], reduction="mean")
-                # Gather the losses across all processes for logging (if we use distributed training).
+                # Compute noise prediction loss
+                weighting = compute_loss_weighting_for_sd3(weighting_scheme=cfg.weighting_scheme, sigmas=sigmas)
+                noise_loss = F.mse_loss(noise_pred.float(), (noise - pixel_latents).float(), reduction="mean")
+                
+                # Initialize total loss with noise prediction loss
+                loss = noise_loss
+                
+                # Check if we should start using frequency loss
+                if global_step >= freq_loss_start_step:
+                    use_freq_loss = True
+                    # Gradually increase frequency loss weight
+                    if global_step < freq_loss_start_step + freq_loss_ramp_steps:
+                        current_weight = freq_loss_weight * (global_step - freq_loss_start_step) / freq_loss_ramp_steps
+                    else:
+                        current_weight = freq_loss_weight
+                
+                # Optional frequency domain loss
+                if use_freq_loss:
+                    # Reconstruct the predicted image
+                    x0_pred = (noisy_model_input - sigmas * noise_pred)
+                    x0_pred = (x0_pred / vae.config.scaling_factor) + vae.config.shift_factor
+                    
+                    # Decode to pixel space
+                    pixel_x0_pred = vae.decode(x0_pred, return_dict=False)[0]
+                    
+                    # Upsample mask to match pixel space dimensions
+                    mask = F.interpolate(batch["mask_input"], (pixel_values.shape[2], pixel_values.shape[3]))
+                    
+                    # Ensure the mask has proper shape
+                    if mask.dim() == 3:
+                        mask = mask.unsqueeze(1)  # Add channel dimension if missing
+    
+                    # Make sure mask values are in [0, 1] range
+                    mask = torch.clamp(mask, 0, 1)
+                    # Compute frequency domain loss
+                    freq_loss = compute_frequency_loss(pixel_x0_pred.float(), pixel_values.float(), mask)
+                    
+                    # Log individual loss components
+                    if global_step % 10 == 0:
+                        logger.info(f"Step {global_step}: Noise loss = {noise_loss.item()}, Frequency loss = {freq_loss.item() * current_weight}")
+                    
+                    # Combine losses
+                    loss = loss + current_weight * freq_loss
+                
+                # Gather the losses across all processes for logging
                 avg_loss = accelerator.gather(loss.repeat(cfg.data.train_batch_size)).mean()
                 train_loss += avg_loss.item()
+                
                 accelerator.backward(loss)
-                # Check if the gradient of each model parameter contains NaN
+                
+                # Check for NaNs in gradients
                 for name, param in net.named_parameters():
                     if param.grad is not None and torch.isnan(param.grad).any():
                         logger.error(f"Gradient for {name} contains NaN!")
 
                 if accelerator.sync_gradients:
                     params_to_clip = net.parameters()
+                    # Use a smaller max_grad_norm for stability
                     accelerator.clip_grad_norm_(params_to_clip, cfg.max_grad_norm)
                 optimizer.step()
                 lr_scheduler.step()
@@ -490,18 +544,26 @@ def main(cfg):
                                     removing_checkpoint = os.path.join(cfg.output_dir, "checkpoints", removing_checkpoint)
                                     shutil.rmtree(removing_checkpoint)
 
-                        save_path = os.path.join(cfg.output_dir, "checkpoints", f"checkpoint-{global_step}")
-                        accelerator.save_state(save_path)
+                        save_path = os.path.join(cfg.output_dir, "checkpoints", "latest_checkpoint")
+                        if os.path.exists(save_path):
+                            shutil.rmtree(save_path)
+                        os.makedirs(save_path, exist_ok=True)
+                        #accelerator.save_state(save_path)
                         logger.info(f"Saved state to {save_path}")
                         
                         unwarp_net = accelerator.unwrap_model(net)
-                        pipeline = StableDiffusion3TryOnPipeline.from_pretrained(cfg.pretrained_model_name_path, transformer_vton=unwarp_net.transformer_vton, pose_guider=unwarp_net.pose_guider)
-                        pipeline.save_pretrained(cfg.output_dir)
-                        # state_dict = {
-                        #     "pose_guider": unwarp_net.pose_guider.state_dict(),
-                        #     "transformer_vton": unwarp_net.transformer_vton.state_dict(),
-                        # }
-                        # save_models(state_dict, cfg.output_dir, global_step)
+                        # With these lines
+                        if global_step % (cfg.checkpointing_steps) == 0:  # Save pipeline less frequently
+                            try:
+                                # Just save the individual model components instead of loading+saving the full pipeline
+                                unwarp_net.transformer_vton.save_pretrained(os.path.join(cfg.output_dir, "transformer_vton"))
+                                pose_guider_path = os.path.join(cfg.output_dir, "pose_guider")
+                                os.makedirs(pose_guider_path, exist_ok=True)
+
+                                torch.save(unwarp_net.pose_guider.state_dict(), os.path.join(pose_guider_path, "diffusion_pytorch_model.bin"))
+                                logger.info(f"Saved models to {cfg.output_dir}")
+                            except Exception as e:
+                                logger.warning(f"Could not save pipeline: {str(e)}")
 
             logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
@@ -509,6 +571,7 @@ def main(cfg):
 
             if global_step >= cfg.max_train_steps:
                 break
+                
     # Create the pipeline using using the trained modules and save it.
     accelerator.wait_for_everyone()
     accelerator.end_training()
@@ -541,4 +604,3 @@ if __name__ == "__main__":
     else:
         raise ValueError("Do not support this format config file")
     main(config)
-

@@ -399,13 +399,24 @@ def main(cfg):
                                     removing_checkpoint = os.path.join(cfg.output_dir, "checkpoints", removing_checkpoint)
                                     shutil.rmtree(removing_checkpoint)
 
-                        save_path = os.path.join(cfg.output_dir, "checkpoints", f"checkpoint-{global_step}")
+                        save_path = os.path.join(cfg.output_dir, "checkpoints", "latest_checkpoint")
+                        if os.path.exists(save_path):
+                            shutil.rmtree(save_path)
+                        os.makedirs(save_path, exist_ok=True)
                         accelerator.save_state(save_path)
                         logger.info(f"Saved state to {save_path}")
                         
+                        # Replace the problematic pipeline creation/saving with simple model saving
                         unwarp_net = accelerator.unwrap_model(transformer_garm)
-                        pipeline = StableDiffusion3TryOnPipeline.from_pretrained(cfg.pretrained_model_name_or_path, transformer_garm=unwarp_net.transformer_garm)
-                        pipeline.save_pretrained(cfg.output_dir)
+
+                        # Save only the transformer_garm model (the trained component)
+                        os.makedirs(os.path.join(cfg.output_dir, "transformer_garm"), exist_ok=True)
+                        unwarp_net.save_pretrained(os.path.join(cfg.output_dir, "transformer_garm"))
+                        logger.info(f"Saved transformer_garm to {os.path.join(cfg.output_dir, 'transformer_garm')}")
+
+                        # Comment out the problematic pipeline creation and saving
+                        # pipeline = StableDiffusion3TryOnPipeline.from_pretrained(cfg.pretrained_model_name_or_path, transformer_garm=unwarp_net, torch_dtype=weight_dtype)
+                        # pipeline.save_pretrained(cfg.output_dir)
                         # state_dict = {
                         #     "pose_guider": unwarp_net.pose_guider.state_dict(),
                         #     "transformer_vton": unwarp_net.transformer_vton.state_dict(),

@@ -60,9 +60,13 @@ class DenosingDitDataset:
         cloth_embeds_path = img_list["cloth_embeds_path"]
         
         vton_img = Image.open(vton_img_path)
+        if vton_img.mode != 'RGB':
+            vton_img = vton_img.convert('RGB')
         vton_img = self.resize_image(vton_img)
         
         garm_img = Image.open(garm_img_path)
+        if garm_img.mode != 'RGB':
+            garm_img = garm_img.convert('RGB')
         garm_img = self.resize_image(garm_img)
         
         pose_img = Image.open(pose_path)
@@ -95,7 +99,7 @@ class DenosingDitDataset:
             print(idx)
             return self.get_sample(idx)
         except Exception as e:
-            logger.warning(f"Exception occurred parsing")
+            logger.warning(f"Exception occurred parsing index {idx}: {str(e)}")
 
 
 
@@ -158,7 +162,7 @@ class GarmentDitDataset:
         try:
             return self.get_sample(idx)
         except Exception as e:
-            logger.warning(f"Exception occurred parsing")
+            logger.warning(f"Exception occurred parsing index {idx}: {str(e)}")
 
 
 def main():

@@ -1,5 +1,5 @@
-model_root: '/workspace/weights/FitDiT'
-pretrained_model_name_or_path: '/workspace/weights/FitDiT'
+model_root: '/workspace/weights/FitDiT-train'
+pretrained_model_name_or_path: '/workspace/weights/FitDiT-train'
 
 data:
   train_batch_size: 1
@@ -27,12 +27,12 @@ guidance_scale: 3.5
 
 seed: 8888
 checkpoints_total_limit: 5
-checkpointing_steps: 100
-max_train_steps: 2000
+checkpointing_steps: 50
+max_train_steps: 500
 gradient_accumulation_steps: 1
 lr_warmup_steps: 50
 lr_scheduler: 'cosine'  # Changed to cosine for better convergence
-learning_rate: 1.0e-5
+learning_rate: 5.0e-5   # Slightly increased
 scale_lr: False
 
 # optimizer
