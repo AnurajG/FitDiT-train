@@ -1,5 +1,5 @@
 import sys
-sys.path.append('/workspace/FitDiT-train')
+sys.path.append('/home/user/FitDiT-train')
 
 import os
 from preprocess.humanparsing.run_parsing import Parsing
@@ -21,17 +21,17 @@ import math
 from garment_classifier import get_garment_category
 
 # Create required directories
-os.makedirs("/workspace/FitDiT-train/train/pose", exist_ok=True)
-os.makedirs("/workspace/FitDiT-train/train/mask", exist_ok=True)
-os.makedirs("/workspace/FitDiT-train/train/cloth_embeds", exist_ok=True)
-os.makedirs("/workspace/FitDiT-train/train/category", exist_ok=True)
+os.makedirs("/home/user/FitDiT-train/train/pose", exist_ok=True)
+os.makedirs("/home/user/FitDiT-train/train/mask", exist_ok=True)
+os.makedirs("/home/user/FitDiT-train/train/cloth_embeds", exist_ok=True)
+os.makedirs("/home/user/FitDiT-train/train/category", exist_ok=True)
 
 # Directory for storing category classifications
-category_dir = "/workspace/FitDiT-train/train/category"
+category_dir = "/home/user/FitDiT-train/train/category"
 
-vton_img_folder = "/workspace/FitDiT-train/train/model"
-garm_img_folder = "/workspace/FitDiT-train/train/garment"
-model_root = "/workspace/weights/FitDiT-train"
+vton_img_folder = "/home/user/FitDiT-train/train/model"
+garm_img_folder = "/home/user/FitDiT-train/train/garment"
+model_root = "/home/user/weights/FitDiT"
 
 print("Loading pre-trained models...")
 image_encoder_large = CLIPVisionModelWithProjection.from_pretrained("openai/clip-vit-large-patch14")

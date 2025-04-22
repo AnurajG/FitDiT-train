@@ -1,12 +1,12 @@
-model_root: '/workspace/weights/FitDiT'
-pretrained_model_name_or_path: '/workspace/weights/FitDiT'
+model_root: '/home/user/weights/FitDiT'
+pretrained_model_name_or_path: '/home/user/weights/FitDiT'
 
 data:
   train_batch_size: 1
   dataloader_num_workers: 0
   height: 1024
   width: 768
-  image_list: ['/workspace/FitDiT-train/data.json']
+  image_list: ['/home/user/FitDiT-train/data.json']
 
 variant: 'fp16'
 save_weight_dtype: 'float32'
@@ -45,4 +45,4 @@ adam_epsilon: 1.0e-8
 max_grad_norm: 1.0
 
 resume_from_checkpoint: ''
-output_dir: '/workspace/weights'
+output_dir: '/home/user/weights'
